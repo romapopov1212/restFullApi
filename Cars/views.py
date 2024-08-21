@@ -1,64 +1,54 @@
 import json
+from django.core.exceptions import ValidationError
 from django.http import JsonResponse, HttpResponse, HttpResponseBadRequest
 from django.views import View
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from .models import Car
 
+@method_decorator(csrf_exempt, name='dispatch')
 class CarListView(View):
     def get(self, request):
+        filter_criteria = {
+            'brand': 'brand__iexact',
+            'model': 'model__iexact',
+            'year': 'year',
+            'fuel_type': 'fuel_type__iexact',
+            'transmission': 'transmission__iexact',
+            'mileage_min': 'mileage__gte',
+            'mileage_max': 'mileage__lte',
+            'price_min': 'price__gte',
+            'price_max': 'price__lte'
+        }
+
         cars = Car.objects.all()
-        
-        # Фильтрация по параметрам
-        brand = request.GET.get('brand')
-        if brand:
-            cars = cars.filter(brand__iexact=brand)
-
-        model = request.GET.get('model')
-        if model:
-            cars = cars.filter(model__iexact=model)
-
-        year = request.GET.get('year')
-        if year:
-            cars = cars.filter(year=year)
-
-        fuel_type = request.GET.get('fuel_type')
-        if fuel_type:
-            cars = cars.filter(fuel_type__iexact=fuel_type)
-
-        transmission = request.GET.get('transmission')
-        if transmission:
-            cars = cars.filter(transmission__iexact=transmission)
-
-        mileage_min = request.GET.get('mileage_min')
-        if mileage_min:
-            cars = cars.filter(mileage__gte=mileage_min)
-
-        mileage_max = request.GET.get('mileage_max')
-        if mileage_max:
-            cars = cars.filter(mileage__lte=mileage_max)
-
-        price_min = request.GET.get('price_min')
-        if price_min:
-            cars = cars.filter(price__gte=price_min)
-
-        price_max = request.GET.get('price_max')
-        if price_max:
-            cars = cars.filter(price__lte=price_max)
-
+        for param, field in filter_criteria.items():
+            value = request.GET.get(param)
+            if value:
+                if param in ['mileage_min', 'mileage_max', 'price_min', 'price_max']:
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        continue
+                cars = cars.filter(**{field: value})
         cars_data = list(cars.values('id', 'brand', 'model', 'year', 'fuel_type', 'transmission', 'mileage', 'price'))
         return JsonResponse(cars_data, safe=False)
 
     def post(self, request):
         try:
             data = json.loads(request.body)
-            car = Car.objects.create(
-                brand=data['brand'],
-                model=data['model'],
-                year=data['year'],
-                fuel_type=data['fuel_type'],
-                transmission=data['transmission'],
-                mileage=data['mileage'],
-                price=data['price']
+            car = Car(
+                brand=data.get('brand'),
+                model=data.get('model'),
+                year=data.get('year'),
+                fuel_type=data.get('fuel_type'),
+                transmission=data.get('transmission'),
+                mileage=data.get('mileage'),
+                price=data.get('price')
             )
+            car.clean()
+            car.save() 
+            
             return JsonResponse({
                 "id": car.id,
                 "brand": car.brand,
@@ -69,9 +59,12 @@ class CarListView(View):
                 "mileage": car.mileage,
                 "price": car.price,
             }, status=201)
+        except ValidationError as e:
+            return JsonResponse(e.message_dict, status=400)
         except (KeyError, json.JSONDecodeError):
             return HttpResponseBadRequest("Invalid data")
 
+@method_decorator(csrf_exempt, name='dispatch')
 class CarDetailView(View):
     def get(self, request, car_id):
         try:
@@ -88,4 +81,14 @@ class CarDetailView(View):
             }
             return JsonResponse(car_data)
         except Car.DoesNotExist:
-            return HttpResponse(status=404)
+            return JsonResponse({"error": "Car not found"}, status=404)
+
+    def delete(self, request, car_id):
+        try:
+            car = Car.objects.get(id=car_id)
+            car.delete()
+            return JsonResponse({"message": "Car deleted successfully"}, status=204)
+        except Car.DoesNotExist:
+            return JsonResponse({"error": "Car not found"}, status=404)
+    
+
